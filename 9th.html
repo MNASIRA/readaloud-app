@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head><link rel="manifest" href="manifest.json" />
+    <meta name="theme-color" content="#007bff" />
+    
+    <!-- App Icons -->
+    <link rel="icon" href="icon-192.png" />
+    <link rel="apple-touch-icon" href="icon-512.png" />
+    
+    <script>
+      // Register service worker
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(() => console.log('✅ Service Worker Registered'))
+          .catch(error => console.log('❌ Service Worker Error:', error));
+      }
+    </script>
+</head>    
+<meta charset="UTF-8" />
+<title>Auto Language Detect + Text to Speech + Google Translate</title>
+<style>
+  body {
+    font-family: 'Noto Nastaliq Urdu', Arial, sans-serif;
+    padding: 15px;
+    max-width: 600px;
+    margin: auto;
+    background: #fdfdfd;
+  }
+  textarea {
+    width: 100%;
+    font-size: 16px;
+    margin-top: 10px;
+    height: 33vh;
+    padding: 10px;
+    line-height: 1.6;
+    direction: auto;
+  }
+  select, input[type="range"], button {
+    width: 100%;
+    margin-top: 10px;
+    font-size: 16px;
+    padding: 8px;
+  }
+  label {
+    margin-top: 10px;
+    display: block;
+    font-size: 15px;
+  }
+  #controls {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+  }
+  #controls button {
+    flex: 1;
+    font-size: 18px;
+    padding: 10px 0;
+  }
+  #playPauseBtn {
+    background-color: #007bff;
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 5px;
+  }
+  #translateBtn {
+    background-color: #28a745;
+    color: white;
+    font-weight: bold;
+    border: none;
+    border-radius: 5px;
+    margin-top: 15px;
+    cursor: pointer;
+  }
+  button:hover {
+    opacity: 0.85;
+  }
+</style>
+</head>
+<body>
+
+<h3>Auto Language Detect + Text to Speech + Google Translate</h3>
+
+<label>فونٹ کا سائز:</label>
+<input type="range" id="fontSize" min="12" max="24" value="16" oninput="updateFontSize(this.value)" />
+
+<textarea id="text" placeholder="اپنا پیراگراف یہاں لکھیں..." oninput="detectDirection(this)"></textarea>
+
+<label>آواز منتخب کریں (اگر دستیاب ہو):</label>
+<select id="voiceSelect"><option>لوڈ ہو رہی ہے...</option></select>
+
+<label>رفتار:</label>
+<input type="range" id="rate" min="0.5" max="2" step="0.1" value="1" />
+
+<div id="controls">
+  <button onclick="prevLine()">⟵ پچھلی</button>
+  <button onclick="togglePlayback()" id="playPauseBtn">▶️ چلائیں</button>
+  <button onclick="nextLine()">اگلی ⟶</button>
+</div>
+
+<label>Google Translate کا ہدف منتخب کریں:</label>
+<select id="targetLang">
+  <option value="en">انگریزی (English)</option>
+  <option value="ur">اردو (Urdu)</option>
+  <option value="hi">ہندی (Hindi)</option>
+  <option value="ar">عربی (Arabic)</option>
+  <option value="fr">فرانسیسی (French)</option>
+  <option value="es">ہسپانوی (Spanish)</option>
+</select>
+
+<button id="translateBtn" onclick="openGoogleTranslate()">🌐 Google Translate</button>
+
+<script>
+  const voiceSelect = document.getElementById("voiceSelect");
+  const textarea = document.getElementById("text");
+  let voices = [],
+      lines = [],
+      currentLine = 0,
+      speaking = false,
+      paused = false,
+      utterance;
+
+  // Load available voices
+  function loadVoices() {
+    voices = speechSynthesis.getVoices();
+    if (!voices.length) return setTimeout(loadVoices, 100);
+    voiceSelect.innerHTML = "";
+    voices.forEach((voice, i) => {
+      const option = document.createElement("option");
+      option.value = i;
+      option.textContent = `${voice.name} (${voice.lang})`;
+      voiceSelect.appendChild(option);
+    });
+  }
+  if (speechSynthesis.onvoiceschanged !== undefined) {
+    speechSynthesis.onvoiceschanged = loadVoices;
+  }
+  loadVoices();
+
+  // Auto detect text language (simple for Urdu/Arabic range)
+  function isRTL(text) {
+    const rtlPattern = /[\u0600-\u06FF]/; // Arabic/Urdu unicode range
+    return rtlPattern.test(text);
+  }
+
+  // Detect text direction for textarea
+  function detectDirection(el) {
+    const text = el.value.trim();
+    if (text.length === 0) {
+      el.style.direction = "ltr";
+      return;
+    }
+    if (isRTL(text[0])) {
+      el.style.direction = "rtl";
+    } else {
+      el.style.direction = "ltr";
+    }
+  }
+
+  // Select voice based on text language
+  function selectVoiceByText(text) {
+    if (!voices.length) return null;
+    let lang = isRTL(text) ? "ur" : "en";
+    // Try to find a voice that matches lang prefix
+    let voice = voices.find(v => v.lang.toLowerCase().startsWith(lang));
+    if (!voice) voice = voices[0]; // fallback
+    return voice;
+  }
+
+  // Speak the current line with auto voice selection
+  function speakLine(index) {
+    if (index < 0 || index >= lines.length) return;
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+
+    const rate = parseFloat(document.getElementById("rate").value);
+    const lineText = lines[index];
+    const selectedVoice = selectVoiceByText(lineText);
+
+    utterance = new SpeechSynthesisUtterance(lineText);
+    if (selectedVoice) {
+      utterance.voice = selectedVoice;
+      utterance.lang = selectedVoice.lang;
+      voiceSelect.value = voices.indexOf(selectedVoice);
+    }
+    utterance.rate = rate;
+
+    utterance.onend = () => {
+      speaking = false;
+      currentLine++;
+      if (!paused && currentLine < lines.length) {
+        speakLine(currentLine);
+      }
+    };
+
+    speechSynthesis.speak(utterance);
+    speaking = true;
+  }
+
+  function togglePlayback() {
+    if (!speaking) {
+      lines = textarea.value.trim().split(/\r?\n/).filter(l => l.trim() !== "");
+      if (lines.length === 0) return alert("براہ کرم کچھ لائنیں لکھیں۔");
+      currentLine = Math.max(0, currentLine);
+      paused = false;
+      speakLine(currentLine);
+      document.getElementById("playPauseBtn").textContent = "⏸ روکیں";
+    } else {
+      paused = true;
+      speechSynthesis.cancel();
+      speaking = false;
+      document.getElementById("playPauseBtn").textContent = "▶️ چلائیں";
+    }
+  }
+
+  function nextLine() {
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+    paused = true;
+    currentLine = Math.min(lines.length - 1, currentLine + 1);
+    speakLine(currentLine);
+  }
+
+  function prevLine() {
+    if (speechSynthesis.speaking) speechSynthesis.cancel();
+    paused = true;
+    currentLine = Math.max(0, currentLine - 1);
+    speakLine(currentLine);
+  }
+
+  function updateFontSize(size) {
+    textarea.style.fontSize = size + "px";
+  }
+
+  // Google Translate open in new tab with auto source detect & chosen target lang
+  function openGoogleTranslate() {
+    const text = encodeURIComponent(textarea.value.trim());
+    if (!text) {
+      alert("براہ کرم ترجمہ کے لیے متن لکھیں۔");
+      return;
+    }
+    const targetLang = document.getElementById("targetLang").value;
+    // sl=auto for auto source detection
+    const url = `https://translate.google.com/?sl=auto&tl=${targetLang}&text=${text}&op=translate`;
+    window.open(url, "_blank");
+  }
+</script>
+<script>
+    let utterance;
+    
+    const textInput = document.getElementById('textInput');
+    textInput.addEventListener('input', () => {
+      const lang = detectLang(textInput.value);
+      if (lang === 'ur-PK') {
+        textInput.style.direction = 'rtl';
+        textInput.style.textAlign = 'right';
+      } else {
+        textInput.style.direction = 'ltr';
+        textInput.style.textAlign = 'left';
+      }
+    });
+  
+    function speakText() {
+      const text = textInput.value;
+      utterance = new SpeechSynthesisUtterance(text);
+      const lang = detectLang(text);
+      utterance.lang = lang;
+      speechSynthesis.speak(utterance);
+    }
+  
+    function pauseText() {
+      speechSynthesis.pause();
+    }
+  
+    function resumeText() {
+      speechSynthesis.resume();
+    }
+  
+    function stopText() {
+      speechSynthesis.cancel();
+    }
+  
+    function detectLang(text) {
+      const urduRegex = /[ء-ی]/;
+      return urduRegex.test(text) ? 'ur-PK' : 'en-US';
+    }
+  
+    function translateText() {
+      const text = textInput.value;
+      const url = `https://translate.google.com/?sl=auto&tl=en&text=${encodeURIComponent(text)}&op=translate`;
+      window.open(url, '_blank');
+    }
+  
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('service-worker.js')
+        .then(() => console.log('✅ Service Worker Registered'))
+        .catch(error => console.log('❌ Service Worker Error:', error));
+    }
+  </script>
+  
+
+</body>
+</html>
